@@ -1,6 +1,0 @@
-2026-01-17 22:54:53,496 | INFO | routers.auth | Login attempt started | phone=9426112346
-2026-01-17 22:54:53,878 | INFO | routers.auth | Login successful | user_id=e12faa92-cb3a-4e10-8681-3b0658c149c5 | role=admin
-2026-01-17 23:02:24,786 | INFO | routers.auth | Login attempt started | phone=9426112346
-2026-01-17 23:03:02,192 | INFO | routers.auth | Login successful | user_id=e12faa92-cb3a-4e10-8681-3b0658c149c5 | role=admin
-2026-01-17 23:05:52,755 | INFO | routers.users | Fetching users list | requested_by=e12faa92-cb3a-4e10-8681-3b0658c149c5
-2026-01-17 23:05:52,817 | INFO | routers.users | Users list fetched successfully | count=1

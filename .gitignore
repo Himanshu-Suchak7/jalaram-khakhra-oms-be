@@ -1,0 +1,47 @@
+# ======================
+# Environment variables
+# ======================
+.env
+.env.*
+!.env.example
+
+# ======================
+# Python cache / build
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# ======================
+# Virtual environment
+# ======================
+venv/
+.venv/
+env/
+
+# ======================
+# IDE / Editor files
+# ======================
+.idea/
+.vscode/
+*.swp
+
+# ======================
+# Logs
+# ======================
+logs/
+*.log
+
+# ======================
+# OS files
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# Alembic
+# ======================
+alembic/versions/*.pyc
