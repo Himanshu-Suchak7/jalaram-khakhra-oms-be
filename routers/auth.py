@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Response, HTTPException
+from fastapi import APIRouter, Response, HTTPException, Request, status
 from fastapi.params import Depends
 from sqlalchemy.orm import Session
 
@@ -6,7 +6,7 @@ from core.logger import get_logger
 from database.database import get_db
 from database.database_models import Users
 from schemas.pydantic_models import LoginResponse, LoginModel
-from utils.jwt import create_access_token, create_refresh_token
+from utils.jwt import create_access_token, create_refresh_token, decode_token
 from utils.security import verify_password
 
 logger = get_logger(__name__)
@@ -76,4 +76,57 @@ def logout(response: Response):
     logger.info("Logout successful")
     return {
         "message": "Logout successful"
+    }
+
+
+@router.post("/refresh")
+def refresh_access_token(request: Request, response: Response, db: Session = Depends(get_db)):
+    refresh_token = request.cookies.get("refresh_token")
+
+    if not refresh_token:
+        logger.warning(f"Refresh token missing")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token missing")
+
+    payload = decode_token(refresh_token)
+
+    if not payload:
+        logger.warning("Invalid refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+    if payload.get("type") != "refresh":
+        logger.warning("Invalid token type for refresh")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type"
+        )
+
+    user_id = payload.get("sub")
+    user = db.query(Users).filter(Users.id == user_id).first()
+
+    if not user:
+        logger.warning(f"Refresh failed | user_not_found | user_id={user_id}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+    if not user.is_active:
+        logger.warning(f"Refresh failed | inactive_user | user_id={user_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user"
+        )
+    # Create new access token
+    access_token = create_access_token({
+        "sub": str(user.id),
+        "role": user.role.value
+    })
+
+    logger.info(f"Access token refreshed | user_id={user.id}")
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
     }

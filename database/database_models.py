@@ -98,7 +98,7 @@ class OrderItems(TimeStamp, Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
-    quantity = Column(Numeric(10, 2), nullable=False)
+    quantity_kg = Column(Numeric(10, 2), nullable=False)
     price_per_kg = Column(Numeric(10, 2), nullable=False)
     line_total = Column(Numeric(12, 2), nullable=False)
 
