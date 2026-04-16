@@ -64,6 +64,7 @@ def login(data: LoginModel, response: Response, db: Session = Depends(get_db)):
 
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token
     }
 
 
@@ -85,8 +86,14 @@ def logout(response: Response):
 
 
 @router.post("/refresh")
-def refresh_access_token(request: Request, response: Response, db: Session = Depends(get_db)):
-    refresh_token = request.cookies.get("refresh_token")
+def refresh_access_token(request: Request, db: Session = Depends(get_db)):
+
+    refresh_token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        refresh_token = auth_header.split(" ")[1]
+    if not refresh_token:
+        refresh_token = request.cookies.get("refresh_token")
 
     if not refresh_token:
         logger.warning(f"Refresh token missing")
