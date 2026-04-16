@@ -9,8 +9,13 @@ from schemas.pydantic_models import LoginResponse, LoginModel
 from utils.jwt import create_access_token, create_refresh_token, decode_token
 from utils.security import verify_password
 
+import os
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+# Detect if we are in production (Vercel)
+IS_VERCEL = os.getenv("VERCEL") is not None
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -50,9 +55,9 @@ def login(data: LoginModel, response: Response, db: Session = Depends(get_db)):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,  # Make true only in production in local use false
-        samesite="lax",
-        max_age=60 * 60 * 40 * 30
+        secure=IS_VERCEL,  # True on Vercel, False locally
+        samesite="none" if IS_VERCEL else "lax",
+        max_age=60 * 60 * 24 * 30  # 30 days
     )
 
     logger.info(f"Login successful | user_id={user.id} | role={user.role.value}")
@@ -69,8 +74,8 @@ def logout(response: Response):
     response.delete_cookie(
         key="refresh_token",
         httponly=True,
-        samesite="lax",
-        secure=False,  # set true in production use false in local
+        samesite="none" if IS_VERCEL else "lax",
+        secure=IS_VERCEL,
     )
 
     logger.info("Logout successful")
