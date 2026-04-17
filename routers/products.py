@@ -264,3 +264,52 @@ def delete_product(product_id: str, db: Session = Depends(get_db), current_user=
             "product_name": product.product_name,
         }
     }
+
+@router.post('/{product_id}/min-stock', status_code=status.HTTP_200_OK)
+def update_min_stock(product_id: str, payload: dict, db: Session = Depends(get_db)):
+    try:
+        logger.info(f"Product minimum stock update initiated | product_id={product_id}")
+        min_stock = payload.get("min_stock_kg")
+
+        if min_stock is None:
+            logger.warning(f"Min stock missing | product_id={product_id}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Minimum stock is required')
+
+        if float(min_stock) < 0:
+            logger.warning(f"Invalid min stock (negative) | product_id={product_id} | value={min_stock}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Minimum stock cannot be negative')
+
+        product = db.query(Products).filter(Products.id == product_id).first()
+
+        if not product:
+            logger.warning(f"Product not found | product_id={product_id}")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+        old_value = product.min_stock_kg
+        product.min_stock_kg = min_stock
+
+        db.commit()
+        db.refresh(product)
+
+        logger.info(
+            f"Min stock updated successfully | product_id={product_id} | old={old_value} | new={min_stock}"
+        )
+
+        return {
+            "message": "Product minimum stock updated successfully",
+            "product_id": str(product.id),
+            "min_stock_kg": float(product.min_stock_kg),
+        }
+    except HTTPException:
+        # 🔥 Important: re-raise without logging again
+        raise
+
+    except Exception as e:
+        logger.error(
+            f"Error updating min stock | product_id={product_id}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to update minimum stock'
+        )

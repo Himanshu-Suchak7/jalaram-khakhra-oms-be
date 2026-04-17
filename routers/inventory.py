@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.orm import Session
 
 from core.logger import get_logger
@@ -172,3 +172,82 @@ def get_inventory_items(
     except Exception:
         logger.error("Error while fetching inventory items", exc_info=True)
         raise
+
+@router.post("/transactions", status_code=status.HTTP_201_CREATED)
+def add_stock(
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+    logger.info("Add stock initiated")
+
+    try:
+        product_id = payload.get("product_id")
+        quantity = payload.get("quantity_kg")
+
+        # 🔹 Validation
+        if not product_id:
+            logger.warning("Product ID missing in add stock request")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Product ID is required"
+            )
+
+        if quantity is None:
+            logger.warning(f"Quantity missing | product_id={product_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quantity is required"
+            )
+
+        if float(quantity) <= 0:
+            logger.warning(f"Invalid quantity | product_id={product_id} | value={quantity}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quantity must be greater than 0"
+            )
+
+        # 🔹 Check product exists
+        product = db.query(Products).filter(Products.id == product_id).first()
+
+        if not product:
+            logger.warning(f"Product not found | product_id={product_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+
+        # 🔹 Create transaction
+        transaction = InventoryTransactions(
+            product_id=product_id,
+            action=InventoryActions.ADD,
+            quantity_kg=quantity,
+            notes="Manual stock added"
+        )
+
+        db.add(transaction)
+        db.commit()
+        db.refresh(transaction)
+
+        logger.info(
+            f"Stock added successfully | product_id={product_id} | quantity={quantity}"
+        )
+
+        return {
+            "message": "Stock added successfully",
+            "transaction_id": str(transaction.id),
+            "product_id": str(product_id),
+            "quantity_kg": float(quantity)
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.error(
+            f"Error adding stock | product_id={payload.get('product_id')}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to add stock"
+        )
