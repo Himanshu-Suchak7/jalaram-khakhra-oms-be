@@ -127,7 +127,9 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
             "phone": business.business_phone_number,
             "gstin": business.gst_number,
             "upi_id": business.upi_id,
-            "upi_qr_image": business.upi_qr_image
+            "upi_qr_image": business.upi_qr_image,
+            "tax_rate": float(business.tax_rate),
+            "shipping_rate": float(business.shipping_rate)
         },
         "bill_to": {
             "name": order.customer_name,

@@ -204,6 +204,8 @@ class InvoiceSummaryModel(BaseModel):
     tax: float
     shipping: float
     grand_total: float
+    tax_rate: float
+    shipping_rate: float
 
 class InvoiceResponse(BaseModel):
     invoice_number: str
