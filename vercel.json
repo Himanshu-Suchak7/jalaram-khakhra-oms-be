@@ -1,0 +1,4 @@
+{
+  "buildCommand": ".vercel/python/.venv/bin/python -m playwright install chromium"
+}
+
