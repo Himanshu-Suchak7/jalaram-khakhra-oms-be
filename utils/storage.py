@@ -57,3 +57,49 @@ def upload_image_to_supabase(file: UploadFile, folder: str = "") -> str:
     finally:
         # Important: Reset file pointer or close it if needed (FastAPI handles closing)
         file.file.seek(0)
+
+def upload_pdf_bytes(pdf_content: bytes, filename: str, folder: str = "invoices") -> str:
+    """
+    Uploads PDF bytes to Supabase Storage and returns the public URL.
+    """
+    if not supabase:
+        raise Exception("Supabase configuration is missing")
+
+    path = f"{folder}/{filename}"
+    
+    try:
+        response = supabase.storage.from_(supabase_bucket).upload(
+            path=path,
+            file=pdf_content,
+            file_options={"content-type": "application/pdf"}
+        )
+        # Check for errors in response
+        if isinstance(response, dict) and response.get("error"):
+            raise Exception(f"Supabase upload error: {response}")
+            
+        public_url = supabase.storage.from_(supabase_bucket).get_public_url(path)
+        return public_url
+    except Exception as e:
+        # If it's already uploaded, we might get a 409, we just return the public URL
+        if "already exists" in str(e).lower():
+            return supabase.storage.from_(supabase_bucket).get_public_url(path)
+        raise e
+
+def check_invoice_exists(filename: str, folder: str = "invoices") -> str:
+    """
+    Checks if an invoice exists and returns the URL, otherwise None.
+    """
+    if not supabase:
+        return None
+    
+    path = f"{folder}/{filename}"
+    try:
+        # Supabase list doesn't have a direct "exists", we can try to get public URL 
+        # but that doesn't verify existence. 
+        # Using list() to check
+        res = supabase.storage.from_(supabase_bucket).list(folder, {"search": filename})
+        if res and any(f['name'] == filename for f in res):
+            return supabase.storage.from_(supabase_bucket).get_public_url(path)
+    except:
+        pass
+    return None

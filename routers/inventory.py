@@ -7,12 +7,19 @@ from database.database_models import InventoryTransactions, InventoryActions, Or
 
 from sqlalchemy import func, case
 
+from schemas.pydantic_models import (
+    InventorySummaryResponse,
+    InventoryItemsListResponse,
+    InventoryTransactionRequest,
+    InventoryTransactionResponse
+)
+
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 
-@router.get("/summary")
+@router.get("/summary", response_model=InventorySummaryResponse)
 def get_inventory_summary(db: Session = Depends(get_db)):
     logger.info("Fetching inventory summary")
 
@@ -81,7 +88,8 @@ def get_inventory_summary(db: Session = Depends(get_db)):
         logger.error("Error while fetching inventory summary", exc_info=True)
         raise
 
-@router.get("/items")
+
+@router.get("/items", response_model=InventoryItemsListResponse)
 def get_inventory_items(
     search: str = None,
     status: str = None,
@@ -123,6 +131,7 @@ def get_inventory_items(
             db.query(
                 Products.id,
                 Products.product_name,
+                Products.price_per_kg,
                 Products.product_image,
                 Products.min_stock_kg,
                 func.coalesce(stock_subq.c.stock, 0).label("stock"),
@@ -159,6 +168,7 @@ def get_inventory_items(
             data.append({
                 "product_id": str(r.id),
                 "product_name": r.product_name,
+                "price_per_kg": float(r.price_per_kg),
                 "stock_kg": round(available_stock, 2),
                 "min_stock_kg": float(r.min_stock_kg),
                 "status": stock_status,
@@ -173,16 +183,16 @@ def get_inventory_items(
         logger.error("Error while fetching inventory items", exc_info=True)
         raise
 
-@router.post("/transactions", status_code=status.HTTP_201_CREATED)
+@router.post("/transactions", response_model=InventoryTransactionResponse, status_code=status.HTTP_201_CREATED)
 def add_stock(
-    payload: dict,
+    payload: InventoryTransactionRequest,
     db: Session = Depends(get_db)
 ):
     logger.info("Add stock initiated")
 
     try:
-        product_id = payload.get("product_id")
-        quantity = payload.get("quantity_kg")
+        product_id = payload.product_id
+        quantity = payload.quantity_kg
 
         # 🔹 Validation
         if not product_id:

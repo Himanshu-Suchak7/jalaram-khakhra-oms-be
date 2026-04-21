@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     CANONICAL_PORT: Optional[int] = None
     CANONICAL_SCHEME: str = "http"
 
+    # PDF rendering (Playwright -> frontend invoice HTML)
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    OMS_PDF_TOKEN_SECRET: Optional[str] = None
+    PDF_RENDER_TIMEOUT_MS: int = 30000
+    PDF_TEMPLATE_VERSION: int = 2
+
     class Config:
         env_file = BASE_DIR / ".env"
         extra = "forbid"

@@ -81,6 +81,7 @@ class Orders(TimeStamp, Base):
     """Orders table"""
     __tablename__ = "orders"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_number = Column(String(50), unique=True, index=True, nullable=False)
     invoice_number = Column(String(50), unique=True, index=True, nullable=True)
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False)
     customer_name = Column(String(255), nullable=False)
