@@ -296,76 +296,282 @@ def update_order_status(order_id: uuid.UUID, payload: dict, db: Session = Depend
                 notes=f"Deducted for Order {order.order_number}"
             )
             db.add(transaction)
-
-    order.order_status = new_status
-    db.commit()
-
-    logger.info(f"Order {order.order_number} status updated from {old_status.name} to {new_status.name}")
-    return {"message": "Status updated successfully", "new_status": new_status.name, "invoice_number": order.invoice_number}
-
-@router.patch('/{order_id}/payment-status')
-def update_payment_status(order_id: uuid.UUID, payload: dict, db: Session = Depends(get_db)):
-    from database.database_models import PaymentStatus
-    new_status_str = payload.get("payment_status")
-    if not new_status_str:
-        raise HTTPException(status_code=400, detail="Payment status is required")
-    
-    try:
-        new_status = PaymentStatus[new_status_str.upper()]
-    except KeyError:
-        raise HTTPException(status_code=400, detail=f"Invalid status: {new_status_str}")
-
-    order = db.query(Orders).filter(Orders.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    order.payment_status = new_status
-    db.commit()
-    return {"message": "Payment status updated successfully", "new_status": new_status.name}
-
-@router.get('/{order_id}/invoice.pdf')
-def download_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
-    logger.info(f"PDF download requested for order {order_id}")
+    logger.info(f"Generating invoice data for order {order_id}")
 
     # 1. Fetch Order
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    # 2. Fetch Business Settings (assuming single business)
+    business = db.query(BusinessSettings).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business settings not found")
+
+    # 3. Fetch Order Items
+    items = db.query(OrderItems, Products.product_name).join(
+        Products, Products.id == OrderItems.product_id
+    ).filter(OrderItems.order_id == order_id).all()
+
+    # 4. Calculate Summary (Tax 18%, Shipping 15%)
+    subtotal = float(order.subtotal)
+    tax = round(subtotal * 0.18, 2)
+    shipping = round(subtotal * 0.15, 2)
+    grand_total = subtotal + tax + shipping
+
+    # 5. Format Response
+    invoice_data = {
+        "invoice_number": order.invoice_number or f"INV-{order.order_number}",
+        "invoice_date": order.created_at.strftime("%Y-%m-%d"),
+        "business": {
+            "name": business.business_name,
+            "address": business.business_address,
+            "phone": business.business_phone_number,
+            "gstin": business.gst_number,
+            "upi_id": business.upi_id,
+            "upi_qr_image": business.upi_qr_image
+        },
+        "bill_to": {
+            "name": order.customer_name,
+            "phone": order.customer_phone_number
+        },
+        "items": [
+            {
+                "product_name": item.product_name,
+                "quantity_kg": float(item.OrderItems.quantity_kg),
+                "price_per_kg": float(item.OrderItems.price_per_kg),
+                "line_total": float(item.OrderItems.line_total)
+            }
+            for item in items
+        ],
+        "summary": {
+            "subtotal": subtotal,
+            "tax": tax,
+            "shipping": shipping,
+            "grand_total": grand_total
+        },
+        "notes": order.notes or "Thank You for your Business!"
+    }
+
+    return invoice_data
+
+@router.get('/{order_id}')
+def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
+    logger.info(f"Fetching order details for {order_id}")
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    items = db.query(OrderItems, Products.product_name).join(
+        Products, Products.id == OrderItems.product_id
+    ).filter(OrderItems.order_id == order_id).all()
+
+    return {
+        "order": order,
+        "items": [
+            {
+                "product_id": str(item.OrderItems.product_id),
+                "product_name": item.product_name,
+                "quantity_kg": float(item.OrderItems.quantity_kg),
+                "price_per_kg": float(item.OrderItems.price_per_kg),
+                "line_total": float(item.OrderItems.line_total)
+            }
+            for item in items
+        ]
+    }
+
+@router.post('/', status_code=status.HTTP_201_CREATED)
+def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db)):
+    logger.info(f"Creating new order for customer {payload.customer_name}")
+
+    try:
+        # 1. Generate Order Number
+        order_num = generate_order_number(db)
+
+        # 2. Calculate Subtotal
+        subtotal = Decimal("0.00")
+        order_items_data = []
+
+        for item in payload.items:
+            product = db.query(Products).filter(Products.id == item.product_id).first()
+            if not product:
+                raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+            
+            line_total = item.quantity_kg * item.price_per_kg
+            subtotal += line_total
+            
+            order_items_data.append({
+                "product_id": item.product_id,
+                "quantity_kg": item.quantity_kg,
+                "price_per_kg": item.price_per_kg,
+                "line_total": line_total
+            })
+
+        # 3. Calculate Total (Subtotal + 18% Tax + 15% Shipping)
+        tax = subtotal * Decimal("0.18")
+        shipping = subtotal * Decimal("0.15")
+        total = subtotal + tax + shipping
+
+        from database.database_models import PaymentStatus
+        # 4. Create Order
+        new_order = Orders(
+            order_number=order_num,
+            customer_id=payload.customer_id,
+            customer_name=payload.customer_name,
+            customer_phone_number=payload.customer_phone_number,
+            order_status=OrderStatus.PENDING,
+            payment_status=PaymentStatus.UNPAID,
+            subtotal=subtotal,
+            total=total,
+            notes=payload.notes
+        )
+
+        db.add(new_order)
+        db.flush() # Get order ID
+
+        # 5. Create Order Items
+        for item_data in order_items_data:
+            order_item = OrderItems(
+                order_id=new_order.id,
+                **item_data
+            )
+            db.add(order_item)
+
+        db.commit()
+        db.refresh(new_order)
+
+        logger.info(f"Order created successfully | order_number={order_num}")
+        return {"message": "Order created successfully", "order_id": str(new_order.id), "order_number": order_num}
+
+    except Exception:
+        db.rollback()
+        logger.error("Error creating order", exc_info=True)
+        raise
+
+@router.patch('/{order_id}', response_model=dict)
+def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depends(get_db)):
+    logger.info(f"Updating order {order_id}")
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    try:
+        # 1. Update basic info
+        order.customer_id = payload.customer_id
+        order.customer_name = payload.customer_name
+        order.customer_phone_number = payload.customer_phone_number
+        order.notes = payload.notes
+
+        # 2. Delete existing items
+        db.query(OrderItems).filter(OrderItems.order_id == order_id).delete()
+
+        # 3. Recalculate and add new items
+        subtotal = Decimal("0.00")
+        for item in payload.items:
+            product = db.query(Products).filter(Products.id == item.product_id).first()
+            if not product:
+                raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+            
+            line_total = item.quantity_kg * item.price_per_kg
+            subtotal += line_total
+            
+            order_item = OrderItems(
+                order_id=order.id,
+                product_id=item.product_id,
+                quantity_kg=item.quantity_kg,
+                price_per_kg=item.price_per_kg,
+                line_total=line_total
+            )
+            db.add(order_item)
+
+        # 4. Update totals
+        tax = subtotal * Decimal("0.18")
+        shipping = subtotal * Decimal("0.15")
+        order.subtotal = subtotal
+        order.total = subtotal + tax + shipping
+
+        db.commit()
+        logger.info(f"Order {order.order_number} updated successfully")
+        return {"message": "Order updated successfully"}
+
+    except Exception:
+        db.rollback()
+        logger.error("Error updating order", exc_info=True)
+        raise
+
+@router.delete('/{order_id}', status_code=status.HTTP_204_NO_CONTENT)
+def delete_order(order_id: str, db: Session = Depends(get_db)):
+    logger.info(f"Deleting order {order_id}")
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    try:
+        # Delete order items first (cascading)
+        db.query(OrderItems).filter(OrderItems.order_id == order_id).delete()
+        db.delete(order)
+        db.commit()
+        return None
+    except Exception:
+        db.rollback()
+        logger.error("Error deleting order", exc_info=True)
+        raise
+
+@router.patch("/{order_id}/status/", response_model=dict)
+def update_order_status(order_id: str, payload: dict, db: Session = Depends(get_db)):
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    order.order_status = payload.get("status")
+    db.commit()
+    logger.info(f"Order {order.order_number} status updated to {order.order_status}")
+    return {"message": "Status updated successfully", "status": order.order_status}
+
+@router.patch("/{order_id}/payment-status/", response_model=dict)
+def update_payment_status(order_id: str, payload: dict, db: Session = Depends(get_db)):
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    order.payment_status = payload.get("status")
+    db.commit()
+    logger.info(f"Order {order.order_number} payment status updated to {order.payment_status}")
+    return {"message": "Payment status updated successfully", "status": order.payment_status}
+
+@router.get('/{order_id}/invoice.pdf')
+def download_invoice(order_id: str, db: Session = Depends(get_db)):
+    logger.info(f"PDF download requested for order {order_id}")
+
+    order = db.query(Orders).filter(Orders.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
     
     if not order.invoice_number:
-        # If no invoice number, it might not be fulfilled, but we should probably generate one if requested
         order.invoice_number = generate_invoice_number(db)
         db.commit()
 
     download_filename = f"{order.invoice_number}.pdf"
-    # Versioned storage filename so UI/PDF template changes don't keep serving stale cached PDFs.
-    storage_filename = f"{order.invoice_number}-v{PDF_TEMPLATE_VERSION}.pdf"
+    storage_filename = f"{order.invoice_number}.pdf"
     
-    # 2. Check if already exists in Supabase
     existing_url = check_invoice_exists(storage_filename)
     if existing_url:
         logger.info(f"Found existing PDF in storage: {existing_url}")
-        # Fetch and return the PDF content
         resp = requests.get(existing_url)
         return Response(content=resp.content, media_type="application/pdf", headers={
             "Content-Disposition": f"attachment; filename={download_filename}"
         })
 
-    # 3. If not exists, generate data
     invoice_data = get_invoice(order_id, db)
-    
-    # 4. Generate PDF bytes
     pdf_bytes = generate_invoice_pdf_content(invoice_data)
     if not pdf_bytes:
         raise HTTPException(status_code=500, detail="Failed to generate PDF")
 
-    # 5. Upload to Supabase
     try:
         public_url = upload_pdf_bytes(pdf_bytes, storage_filename)
         logger.info(f"New PDF generated and uploaded: {public_url}")
     except Exception as e:
         logger.error(f"Failed to upload PDF: {str(e)}")
-        # Continue anyway and return the bytes even if upload failed
 
     return Response(content=pdf_bytes, media_type="application/pdf", headers={
         "Content-Disposition": f"attachment; filename={download_filename}"
