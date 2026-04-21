@@ -56,6 +56,8 @@ class CreateBusinessModel(BaseModel):
     upi_qr_image: str = Field(...)
     business_email: Optional[EmailStr] = None
     gst_number: Optional[str] = None
+    tax_rate: float = Field(default=18.0)
+    shipping_rate: float = Field(default=15.0)
 
 class UpdateBusinessModel(BaseModel):
     business_name: Optional[str] = Field(None, min_length=2, max_length=100)
@@ -65,6 +67,8 @@ class UpdateBusinessModel(BaseModel):
     upi_id: Optional[str] = Field(None, min_length=8, max_length=20)
     upi_qr_image: Optional[str] = Field(None)
     gst_number: Optional[str] = None
+    tax_rate: Optional[float] = None
+    shipping_rate: Optional[float] = None
 
 class AddProductModel(BaseModel):
     product_name: str = Field(..., min_length=2, max_length=100)
@@ -160,6 +164,7 @@ class RevenueOverviewModel(BaseModel):
     series: list[RevenueSeriesModel]
 
 class RecentOrderModel(BaseModel):
+    id: uuid.UUID
     order_id: str
     customer_name: str
     date: str
@@ -181,6 +186,8 @@ class BusinessInfoModel(BaseModel):
     gstin: Optional[str] = None
     upi_id: str
     upi_qr_image: str
+    tax_rate: float
+    shipping_rate: float
 
 class BillToModel(BaseModel):
     name: str

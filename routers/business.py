@@ -44,6 +44,8 @@ def get_business(db: Session = Depends(get_db), current_user=Depends(get_current
         "gst_number": business.gst_number,
         "upi_id": business.upi_id,
         "upi_qr_image": business.upi_qr_image,
+        "tax_rate": float(business.tax_rate),
+        "shipping_rate": float(business.shipping_rate),
     }
 
 
@@ -56,9 +58,11 @@ def create_business(
         upi_qr_image: UploadFile = File(...),
         business_email: str | None = Form(None),
         gst_number: str | None = Form(None),
+        tax_rate: float = Form(18.0),
+        shipping_rate: float = Form(15.0),
         db: Session = Depends(get_db),
         current_user=Depends(admin_required),
-):
+    ):
     logger.info(f"Adding business details | requested_by={current_user['sub']}")
 
     existing_business = db.query(BusinessSettings).first()
@@ -81,6 +85,8 @@ def create_business(
         gst_number=gst_number,
         upi_id=upi_id,
         upi_qr_image=qr_url,
+        tax_rate=tax_rate,
+        shipping_rate=shipping_rate,
     )
     db.add(business)
     db.commit()
@@ -99,6 +105,8 @@ def create_business(
             "gst_number": business.gst_number,
             "upi_id": business.upi_id,
             "upi_qr_image": business.upi_qr_image,
+            "tax_rate": float(business.tax_rate),
+            "shipping_rate": float(business.shipping_rate),
         },
     }
 
@@ -112,9 +120,11 @@ def update_business(
         upi_qr_image: UploadFile | None = File(None),
         business_email: str | None = Form(None),
         gst_number: str | None = Form(None),
+        tax_rate: float | None = Form(None),
+        shipping_rate: float | None = Form(None),
         db: Session = Depends(get_db),
         current_user=Depends(admin_required),
-):
+    ):
     logger.info(f"Updating business details | requested_by={current_user['sub']}")
 
     business = db.query(BusinessSettings).first()
@@ -149,6 +159,11 @@ def update_business(
             # Save QR to Supabase
             business.upi_qr_image = upload_image_to_supabase(upi_qr_image, folder="qr-codes")
 
+    if tax_rate is not None:
+        business.tax_rate = tax_rate
+    if shipping_rate is not None:
+        business.shipping_rate = shipping_rate
+
     db.commit()
     db.refresh(business)
 
@@ -165,5 +180,7 @@ def update_business(
             "gst_number": business.gst_number,
             "upi_id": business.upi_id,
             "upi_qr_image": business.upi_qr_image,
+            "tax_rate": float(business.tax_rate),
+            "shipping_rate": float(business.shipping_rate),
         }
     }

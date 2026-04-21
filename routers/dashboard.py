@@ -72,6 +72,7 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
 
         recent_orders = [
             {
+                "id": r.id,
                 "order_id": r.order_number,
                 "customer_name": r.customer_name,
                 "date": r.created_at.strftime("%Y-%m-%d"),

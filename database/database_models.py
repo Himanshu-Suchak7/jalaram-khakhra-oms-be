@@ -52,6 +52,8 @@ class BusinessSettings(TimeStamp, Base):
     gst_number = Column(String(20), nullable=True)
     upi_id = Column(String(50), nullable=False)
     upi_qr_image = Column(String(512), nullable=False)
+    tax_rate = Column(Numeric(5, 2), nullable=False, default=18.00)
+    shipping_rate = Column(Numeric(5, 2), nullable=False, default=15.00)
 
 
 class Products(TimeStamp, Base):
