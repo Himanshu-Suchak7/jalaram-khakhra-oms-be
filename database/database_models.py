@@ -128,4 +128,6 @@ class Customers(TimeStamp, Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_name = Column(String(255), nullable=False)
     customer_phone_number = Column(String(20), nullable=False, index=True, unique=True)
+    customer_address = Column(String(512), nullable=True)
+    customer_city = Column(String(100), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)

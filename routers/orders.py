@@ -118,6 +118,8 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
     shipping = round(subtotal * shipping_rate, 2)
     grand_total = subtotal + tax + shipping
 
+    customer = db.query(Customers).filter(Customers.id == order.customer_id).first()
+
     return {
         "invoice_number": order.invoice_number or f"INV-{order.order_number}",
         "invoice_date": order.created_at.strftime("%Y-%m-%d"),
@@ -133,7 +135,9 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
         },
         "bill_to": {
             "name": order.customer_name,
-            "phone": order.customer_phone_number
+            "phone": order.customer_phone_number,
+            "address": customer.customer_address if customer else None,
+            "city": customer.customer_city if customer else None
         },
         "items": [
             {
@@ -254,12 +258,76 @@ def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depen
         raise HTTPException(status_code=404, detail="Order not found")
 
     try:
+        def _items_match(existing_items: list[OrderItems], incoming_items: list) -> bool:
+            existing_norm = sorted(
+                [
+                    (str(i.product_id), Decimal(str(i.quantity_kg)), Decimal(str(i.price_per_kg)))
+                    for i in existing_items
+                ],
+                key=lambda x: x[0],
+            )
+            incoming_norm = sorted(
+                [
+                    (str(i.product_id), Decimal(str(i.quantity_kg)), Decimal(str(i.price_per_kg)))
+                    for i in incoming_items
+                ],
+                key=lambda x: x[0],
+            )
+            return existing_norm == incoming_norm
+
+        edit_mode = "full"
+        if order.order_status == OrderStatus.CANCELLED:
+            edit_mode = "none"
+        elif order.order_status == OrderStatus.FULFILLED and order.payment_status == PaymentStatus.PAID:
+            edit_mode = "notes_only"
+        elif order.order_status == OrderStatus.FULFILLED:
+            edit_mode = "limited"
+        elif order.order_status == OrderStatus.PENDING and order.payment_status == PaymentStatus.PAID:
+            edit_mode = "limited"
+
+        if edit_mode == "none":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cancelled orders cannot be edited"
+            )
+
+        existing_items = db.query(OrderItems).filter(OrderItems.order_id == order.id).all()
+
+        if edit_mode in ("limited", "notes_only"):
+            if str(payload.customer_id) != str(order.customer_id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Customer cannot be changed for this order"
+                )
+
+            if not _items_match(existing_items, payload.items):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Order items cannot be changed for this order"
+                )
+
+            if edit_mode == "notes_only":
+                if payload.customer_name != order.customer_name or payload.customer_phone_number != order.customer_phone_number:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Only notes can be edited for this order"
+                    )
+                order.notes = payload.notes
+            else:
+                order.customer_name = payload.customer_name
+                order.customer_phone_number = payload.customer_phone_number
+                order.notes = payload.notes
+
+            db.commit()
+            logger.info(f"Order {order.order_number} updated successfully | mode={edit_mode}")
+            return {"message": "Order updated successfully"}
+
         order.customer_id = payload.customer_id
         order.customer_name = payload.customer_name
         order.customer_phone_number = payload.customer_phone_number
         order.notes = payload.notes
 
-        db.query(OrderItems).filter(OrderItems.order_id == order_id).delete()
+        db.query(OrderItems).filter(OrderItems.order_id == order.id).delete()
 
         subtotal = Decimal("0.00")
         for item in payload.items:
@@ -330,6 +398,13 @@ def update_order_status(order_id: str, payload: dict, db: Session = Depends(get_
     if order.order_status == new_status:
         return {"message": "Status is already set to this value"}
 
+    # Lock final states (no undo flows implemented)
+    if order.order_status in (OrderStatus.CANCELLED, OrderStatus.FULFILLED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Order status is locked ({order.order_status.value})"
+        )
+
     if new_status == OrderStatus.FULFILLED:
         if not order.invoice_number:
             order.invoice_number = generate_invoice_number(db)
@@ -354,8 +429,31 @@ def update_payment_status(order_id: str, payload: dict, db: Session = Depends(ge
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    order.payment_status = payload.get("status")
+
+    new_status_str = payload.get("status")
+    try:
+        new_status = PaymentStatus[new_status_str.upper()]
+    except (KeyError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"Invalid payment status: {new_status_str}")
+
+    if order.payment_status == new_status:
+        return {"message": "Payment status is already set to this value"}
+
+    # Lock cancelled orders
+    if order.order_status == OrderStatus.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cancelled orders cannot change payment status"
+        )
+
+    # Lock PAID (no refund flows implemented)
+    if order.payment_status == PaymentStatus.PAID:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payment status is locked (paid)"
+        )
+
+    order.payment_status = new_status
     db.commit()
     logger.info(f"Order {order.order_number} payment status updated to {order.payment_status}")
     return {"message": "Payment status updated successfully", "status": order.payment_status}

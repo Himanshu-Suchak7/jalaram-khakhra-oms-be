@@ -43,10 +43,14 @@ class EditUserProfileModel(BaseModel):
 class CreateCustomerModel(BaseModel):
     customer_name: str = Field(..., min_length=2, max_length=100)
     customer_phone_number: str = Field(..., min_length=8, max_length=20)
+    customer_address: Optional[str] = Field(None, max_length=512)
+    customer_city: Optional[str] = Field(None, max_length=100)
 
 class EditCustomerModel(BaseModel):
     customer_name: Optional[str] = Field(None, min_length=2, max_length=100)
     customer_phone_number: Optional[str] = Field(None, min_length=8, max_length=20)
+    customer_address: Optional[str] = Field(None, max_length=512)
+    customer_city: Optional[str] = Field(None, max_length=100)
 
 class CreateBusinessModel(BaseModel):
     business_name: str = Field(..., min_length=2, max_length=100)
@@ -192,6 +196,8 @@ class BusinessInfoModel(BaseModel):
 class BillToModel(BaseModel):
     name: str
     phone: str
+    address: Optional[str] = None
+    city: Optional[str] = None
 
 class InvoiceItemModel(BaseModel):
     product_name: str

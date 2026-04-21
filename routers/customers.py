@@ -29,6 +29,8 @@ def get_customers(
             'id': str(customer.id),
             'customer_name': customer.customer_name,
             'customer_phone_number': customer.customer_phone_number,
+            'customer_address': customer.customer_address,
+            'customer_city': customer.customer_city,
             'is_active': customer.is_active,
         } for customer in customers
     ]
@@ -53,6 +55,8 @@ def create_customer(data: CreateCustomerModel, db: Session = Depends(get_db), cu
     new_customer = Customers(
         customer_name=data.customer_name,
         customer_phone_number=data.customer_phone_number,
+        customer_address=data.customer_address,
+        customer_city=data.customer_city,
         is_active=True,
     )
 
@@ -67,6 +71,8 @@ def create_customer(data: CreateCustomerModel, db: Session = Depends(get_db), cu
             "id": str(new_customer.id),
             "customer_name": new_customer.customer_name,
             "customer_phone_number": new_customer.customer_phone_number,
+            "customer_address": new_customer.customer_address,
+            "customer_city": new_customer.customer_city,
             "is_active": new_customer.is_active,
         }
     }
@@ -89,6 +95,8 @@ def get_customer(customer_id: str, db: Session = Depends(get_db), current_user=D
         "id": str(customer.id),
         "customer_name": customer.customer_name,
         "customer_phone_number": customer.customer_phone_number,
+        "customer_address": customer.customer_address,
+        "customer_city": customer.customer_city,
         "is_active": customer.is_active,
     }
 
@@ -150,6 +158,12 @@ def edit_customer(customer_id: str, data: EditCustomerModel, db: Session = Depen
     if data.customer_name is not None:
         customer.customer_name = data.customer_name
 
+    if data.customer_address is not None:
+        customer.customer_address = data.customer_address
+
+    if data.customer_city is not None:
+        customer.customer_city = data.customer_city
+
     db.commit()
     db.refresh(customer)
 
@@ -160,5 +174,7 @@ def edit_customer(customer_id: str, data: EditCustomerModel, db: Session = Depen
             "id": str(customer.id),
             "customer_name": customer.customer_name,
             "customer_phone_number": customer.customer_phone_number,
+            "customer_address": customer.customer_address,
+            "customer_city": customer.customer_city,
         }
     }
