@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from core.logger import get_logger
 from database.database import get_db
 from database.database_models import InventoryTransactions, InventoryActions, OrderItems, Orders, Products, OrderStatus
+from dependencies.auth import get_current_user
+from dependencies.roles import admin_required
 
 from sqlalchemy import func, case
 
@@ -20,7 +22,7 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 
 @router.get("/summary", response_model=InventorySummaryResponse)
-def get_inventory_summary(db: Session = Depends(get_db)):
+def get_inventory_summary(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info("Fetching inventory summary")
 
     try:
@@ -93,11 +95,14 @@ def get_inventory_summary(db: Session = Depends(get_db)):
 def get_inventory_items(
     search: str = None,
     status: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     logger.info("Fetching inventory items")
 
     try:
+        is_admin = current_user.get("role") == "admin"
+
         # --- Stock (ADD - DEDUCT) ---
         stock_subq = (
             db.query(
@@ -132,6 +137,7 @@ def get_inventory_items(
                 Products.id,
                 Products.product_name,
                 Products.price_per_kg,
+                Products.cost_price_per_kg,
                 Products.product_image,
                 Products.min_stock_kg,
                 func.coalesce(stock_subq.c.stock, 0).label("stock"),
@@ -169,6 +175,8 @@ def get_inventory_items(
                 "product_id": str(r.id),
                 "product_name": r.product_name,
                 "price_per_kg": float(r.price_per_kg),
+                "has_cost_price": r.cost_price_per_kg is not None,
+                "cost_price_per_kg": float(r.cost_price_per_kg) if (is_admin and r.cost_price_per_kg is not None) else None,
                 "stock_kg": round(available_stock, 2),
                 "min_stock_kg": float(r.min_stock_kg),
                 "status": stock_status,
@@ -186,7 +194,8 @@ def get_inventory_items(
 @router.post("/transactions", response_model=InventoryTransactionResponse, status_code=status.HTTP_201_CREATED)
 def add_stock(
     payload: InventoryTransactionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(admin_required),
 ):
     logger.info("Add stock initiated")
 

@@ -61,7 +61,10 @@ class Products(TimeStamp, Base):
     __tablename__ = "products"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_name = Column(String(255), nullable=False, unique=True)
+    # Selling price (current). OrderItems snapshots the actual sale price.
     price_per_kg = Column(Numeric(10, 2), nullable=False)
+    # Cost price (current). OrderItems snapshots the cost used for profit.
+    cost_price_per_kg = Column(Numeric(10, 2), nullable=True)
     product_image = Column(String(512), nullable=True)
     min_stock_kg = Column(Numeric(10, 2), nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -103,7 +106,11 @@ class OrderItems(TimeStamp, Base):
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
     quantity_kg = Column(Numeric(10, 2), nullable=False)
     price_per_kg = Column(Numeric(10, 2), nullable=False)
+    # Snapshotted cost price at time of order creation/update (full edit only).
+    cost_price_per_kg = Column(Numeric(10, 2), nullable=True)
     line_total = Column(Numeric(12, 2), nullable=False)
+    # Precomputed profit for this item line: (price - cost) * quantity
+    profit = Column(Numeric(12, 2), nullable=True)
 
 
 class InventoryActions(enum.Enum):

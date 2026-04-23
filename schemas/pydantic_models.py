@@ -77,11 +77,13 @@ class UpdateBusinessModel(BaseModel):
 class AddProductModel(BaseModel):
     product_name: str = Field(..., min_length=2, max_length=100)
     product_price: Decimal = Field(..., gt=0, max_digits=18, decimal_places=2)
+    cost_price_per_kg: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     product_image: str = Field(...)
 
 class EditProductModel(BaseModel):
     product_name: Optional[str] = Field(None, min_length=2, max_length=100)
     product_price: Optional[Decimal] = Field(None, gt=0, max_digits=18, decimal_places=2)
+    cost_price_per_kg: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     product_image: Optional[str] = Field(None)
 
 # --- Inventory Models ---
@@ -95,6 +97,8 @@ class InventoryItemResponse(BaseModel):
     product_id: uuid.UUID
     product_name: str
     price_per_kg: float
+    has_cost_price: bool
+    cost_price_per_kg: Optional[float] = None
     stock_kg: float
     min_stock_kg: float
     status: str
@@ -180,6 +184,52 @@ class DashboardOverviewResponse(BaseModel):
     order_status: OrderStatusDistribution
     revenue_overview: RevenueOverviewModel
     recent_orders: list[RecentOrderModel]
+
+# --- Profit Models ---
+
+class ProfitSummaryBlock(BaseModel):
+    total_profit: float
+    today_profit: float
+    month_profit: float
+
+class ProfitSummaryResponse(BaseModel):
+    currency: str = "INR"
+    as_of: str
+    accrued: ProfitSummaryBlock
+    realized: ProfitSummaryBlock
+    fulfilled_orders_total: int
+    fulfilled_orders_today: int
+    fulfilled_orders_month: int
+    realized_orders_total: int
+    realized_orders_today: int
+    realized_orders_month: int
+    missing_profit_orders_total: int
+
+class ProfitProductRow(BaseModel):
+    product_id: uuid.UUID
+    product_name: str
+    quantity_sold_kg: float
+    revenue: float
+    profit: float
+    margin_percent: Optional[float] = None
+
+class ProfitProductsResponse(BaseModel):
+    currency: str = "INR"
+    period: dict
+    items: list[ProfitProductRow]
+
+class ProfitOrderRow(BaseModel):
+    order_id: uuid.UUID
+    order_number: str
+    order_date: str
+    payment_status: str
+    revenue: float
+    profit: float
+
+class ProfitOrdersResponse(BaseModel):
+    currency: str = "INR"
+    period: dict
+    orders: list[ProfitOrderRow]
 
 # --- Invoice Models ---
 

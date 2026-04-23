@@ -10,6 +10,7 @@ from core.logger import get_logger
 from database.database import get_db
 from database.database_models import Products
 from dependencies.auth import get_current_user
+from dependencies.roles import admin_required
 from schemas.pydantic_models import AddProductModel, EditProductModel
 from utils.storage import upload_image_to_supabase
 
@@ -57,6 +58,25 @@ def _validate_price(price: Decimal | None, required: bool) -> Decimal | None:
     return price
 
 
+def _parse_cost(value: str | None) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(value)
+    except (InvalidOperation, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid cost price")
+
+
+def _validate_cost(cost: Decimal | None, required: bool) -> Decimal | None:
+    if cost is None:
+        if required:
+            raise HTTPException(status_code=422, detail="Cost price is required")
+        return None
+    if cost < 0:
+        raise HTTPException(status_code=422, detail="Cost price cannot be negative")
+    return cost
+
+
 def _upload_image_if_present(upload: UploadFile | None) -> str | None:
     if not upload:
         return None
@@ -72,6 +92,7 @@ def _upload_image_if_present(upload: UploadFile | None) -> str | None:
 def get_products(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Fetching products list | requested_by={current_user['sub']}")
 
+    is_admin = current_user.get("role") == "admin"
     products = db.query(Products).all()
 
     response = [
@@ -79,6 +100,8 @@ def get_products(db: Session = Depends(get_db), current_user=Depends(get_current
             "id": str(product.id),
             "name": product.product_name,
             "price": product.price_per_kg,
+            "has_cost_price": product.cost_price_per_kg is not None,
+            "cost_price_per_kg": float(product.cost_price_per_kg) if (is_admin and product.cost_price_per_kg is not None) else None,
             "image": product.product_image,
             "is_active": product.is_active,
         }
@@ -93,7 +116,7 @@ def get_products(db: Session = Depends(get_db), current_user=Depends(get_current
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def add_product(request: Request, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+async def add_product(request: Request, db: Session = Depends(get_db), current_user=Depends(admin_required)):
     logger.info(f"Adding New Product | requested_by={current_user['sub']}")
 
     content_type = request.headers.get("content-type", "")
@@ -102,16 +125,19 @@ async def add_product(request: Request, db: Session = Depends(get_db), current_u
         data = AddProductModel(**payload)
         product_name = data.product_name
         product_price = data.product_price
+        cost_price = _validate_cost(data.cost_price_per_kg, required=True)
         product_image = data.product_image
     else:
         form = await request.form()
         raw_name = form.get("name") or form.get("product_name")
         raw_price = form.get("price") or form.get("product_price")
+        raw_cost = form.get("cost_price_per_kg") or form.get("cost_price") or form.get("product_cost_price")
         raw_image = form.get("image") or form.get("product_image")
 
         upload = _extract_upload(raw_image)
         product_name = _validate_name(raw_name, required=True)
         product_price = _validate_price(_parse_price(raw_price), required=True)
+        cost_price = _validate_cost(_parse_cost(raw_cost), required=True)
 
         product_image = None
         if upload:
@@ -131,6 +157,7 @@ async def add_product(request: Request, db: Session = Depends(get_db), current_u
     product = Products(
         product_name=product_name,
         price_per_kg=product_price,
+        cost_price_per_kg=cost_price,
         product_image=product_image
     )
 
@@ -150,6 +177,7 @@ async def add_product(request: Request, db: Session = Depends(get_db), current_u
             "id": str(product.id),
             "product_name": product.product_name,
             "product_price": product.price_per_kg,
+            "cost_price_per_kg": product.cost_price_per_kg,
             "product_image": product.product_image,
             "is_active": product.is_active,
         }
@@ -157,7 +185,7 @@ async def add_product(request: Request, db: Session = Depends(get_db), current_u
 
 @router.patch("/{product_id}", status_code=status.HTTP_200_OK)
 async def edit_product(product_id: str, request: Request, db: Session = Depends(get_db),
-                       current_user=Depends(get_current_user)):
+                       current_user=Depends(admin_required)):
     logger.info(f"Product update initiated | product_id={product_id} | by_user={current_user['sub']}")
 
     product = db.query(Products).filter(Products.id == product_id).first()
@@ -176,16 +204,19 @@ async def edit_product(product_id: str, request: Request, db: Session = Depends(
         data = EditProductModel(**payload)
         product_name = data.product_name
         product_price = data.product_price
+        cost_price = _validate_cost(data.cost_price_per_kg, required=False)
         product_image = data.product_image
     else:
         form = await request.form()
         raw_name = form.get("name") or form.get("product_name")
         raw_price = form.get("price") or form.get("product_price")
+        raw_cost = form.get("cost_price_per_kg") or form.get("cost_price") or form.get("product_cost_price")
         raw_image = form.get("image") or form.get("product_image")
 
         upload = _extract_upload(raw_image)
         product_name = _validate_name(raw_name, required=False)
         product_price = _validate_price(_parse_price(raw_price), required=False)
+        cost_price = _validate_cost(_parse_cost(raw_cost), required=False)
 
         product_image = None
         if upload:
@@ -210,6 +241,9 @@ async def edit_product(product_id: str, request: Request, db: Session = Depends(
     if product_price is not None:
         product.price_per_kg = product_price
 
+    if cost_price is not None:
+        product.cost_price_per_kg = cost_price
+
     if product_image is not None:
         product.product_image = product_image
 
@@ -230,11 +264,12 @@ async def edit_product(product_id: str, request: Request, db: Session = Depends(
             "id": str(product.id),
             "product_name": product.product_name,
             "product_price": product.price_per_kg,
+            "cost_price_per_kg": product.cost_price_per_kg,
         }
     }
 
 @router.delete("/{product_id}", status_code=status.HTTP_200_OK)
-def delete_product(product_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def delete_product(product_id: str, db: Session = Depends(get_db), current_user=Depends(admin_required)):
     logger.warning(f"Soft delete product request | target_product={product_id}")
     product = db.query(Products).filter(Products.id == product_id).first()
     if not product:

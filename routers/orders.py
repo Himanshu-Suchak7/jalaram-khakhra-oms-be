@@ -3,15 +3,19 @@ from decimal import Decimal
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 import uuid
+from datetime import datetime, timezone
 
 from core.logger import get_logger
 from database.database import get_db
 from database.database_models import Orders, Customers, OrderItems, BusinessSettings, Products, InventoryTransactions, InventoryActions, OrderStatus, PaymentStatus
+from dependencies.auth import get_current_user
 from schemas.pydantic_models import OrdersListResponse, InvoiceResponse, CreateOrderRequest
 from utils.generate_order_number import generate_order_number
 from utils.generate_invoice_number import generate_invoice_number
 from utils.pdf_generator import generate_invoice_pdf_content, PDF_TEMPLATE_VERSION
 from utils.storage import upload_pdf_bytes, check_invoice_exists
+from utils.money import money
+from utils.timezone import IST
 from fastapi.responses import Response, RedirectResponse
 import requests
 
@@ -20,12 +24,41 @@ logger = get_logger(__name__)
 router = APIRouter(prefix='/orders', tags=["orders"])
 
 
+def _load_products_for_items(db: Session, items: list) -> dict[str, Products]:
+    product_ids = list({i.product_id for i in items})
+    if not product_ids:
+        return {}
+    products = db.query(Products).filter(Products.id.in_(product_ids)).all()
+    return {str(p.id): p for p in products}
+
+
+def _validate_cost_prices(items: list, products_by_id: dict[str, Products]) -> None:
+    missing = []
+    for item in items:
+        product = products_by_id.get(str(item.product_id))
+        if not product:
+            raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+        if product.cost_price_per_kg is None:
+            missing.append({"product_id": str(product.id), "product_name": product.product_name})
+
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "MISSING_COST_PRICE",
+                "message": "Cost price is required for all items before creating/updating an order.",
+                "missing_products": missing,
+            },
+        )
+
+
 @router.get('/', response_model=OrdersListResponse)
 def get_orders(
     search: str = Query(None),
     status: str = Query(None),
     payment_status: str = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     logger.info("Fetching orders list")
 
@@ -40,7 +73,7 @@ def get_orders(
                 Orders.created_at,
                 func.coalesce(
                     func.sum(
-                        OrderItems.quantity_kg * OrderItems.price_per_kg
+                        OrderItems.line_total
                     ),
                     0
                 ).label("total_amount")
@@ -94,7 +127,7 @@ def get_orders(
         raise
 
 @router.get('/{order_id}/invoice', response_model=InvoiceResponse)
-def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Generating invoice data for order {order_id}")
 
     order = db.query(Orders).filter(Orders.id == order_id).first()
@@ -110,19 +143,19 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
     ).filter(OrderItems.order_id == order_id).all()
 
     # Dynamic Tax & Shipping
-    tax_rate = float(business.tax_rate) / 100
-    shipping_rate = float(business.shipping_rate) / 100
-    
-    subtotal = float(order.subtotal)
-    tax = round(subtotal * tax_rate, 2)
-    shipping = round(subtotal * shipping_rate, 2)
-    grand_total = subtotal + tax + shipping
+    tax_rate = (Decimal(str(business.tax_rate)) / Decimal("100")) if business else Decimal("0")
+    shipping_rate = (Decimal(str(business.shipping_rate)) / Decimal("100")) if business else Decimal("0")
+
+    subtotal = Decimal(str(order.subtotal))
+    tax = money(subtotal * tax_rate)
+    shipping = money(subtotal * shipping_rate)
+    grand_total = money(subtotal + tax + shipping)
 
     customer = db.query(Customers).filter(Customers.id == order.customer_id).first()
 
     return {
         "invoice_number": order.invoice_number or f"INV-{order.order_number}",
-        "invoice_date": order.created_at.strftime("%Y-%m-%d"),
+        "invoice_date": order.created_at.astimezone(IST).strftime("%Y-%m-%d"),
         "business": {
             "name": business.business_name,
             "address": business.business_address,
@@ -149,10 +182,10 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
             for item in items
         ],
         "summary": {
-            "subtotal": subtotal,
-            "tax": tax,
-            "shipping": shipping,
-            "grand_total": grand_total,
+            "subtotal": float(subtotal),
+            "tax": float(tax),
+            "shipping": float(shipping),
+            "grand_total": float(grand_total),
             "tax_rate": float(business.tax_rate),
             "shipping_rate": float(business.shipping_rate)
         },
@@ -160,7 +193,7 @@ def get_invoice(order_id: uuid.UUID, db: Session = Depends(get_db)):
     }
 
 @router.get('/{order_id}')
-def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_order(order_id: uuid.UUID, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Fetching order details for {order_id}")
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
@@ -178,14 +211,16 @@ def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
                 "product_name": item.product_name,
                 "quantity_kg": float(item.OrderItems.quantity_kg),
                 "price_per_kg": float(item.OrderItems.price_per_kg),
-                "line_total": float(item.OrderItems.line_total)
+                "cost_price_per_kg": float(item.OrderItems.cost_price_per_kg) if item.OrderItems.cost_price_per_kg is not None else None,
+                "line_total": float(item.OrderItems.line_total),
+                "profit": float(item.OrderItems.profit) if item.OrderItems.profit is not None else None,
             }
             for item in items
         ]
     }
 
 @router.post('/', status_code=status.HTTP_201_CREATED)
-def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db)):
+def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Creating new order for customer {payload.customer_name}")
 
     try:
@@ -193,29 +228,34 @@ def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db)):
         subtotal = Decimal("0.00")
         order_items_data = []
 
+        products_by_id = _load_products_for_items(db, payload.items)
+        _validate_cost_prices(payload.items, products_by_id)
+
         for item in payload.items:
-            product = db.query(Products).filter(Products.id == item.product_id).first()
-            if not product:
-                raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
-            
-            line_total = item.quantity_kg * item.price_per_kg
-            subtotal += line_total
+            product = products_by_id[str(item.product_id)]
+            cost_price = Decimal(str(product.cost_price_per_kg))
+
+            line_total = money(item.quantity_kg * item.price_per_kg)
+            profit = money((item.price_per_kg - cost_price) * item.quantity_kg)
+            subtotal = money(subtotal + line_total)
             
             order_items_data.append({
                 "product_id": item.product_id,
                 "quantity_kg": item.quantity_kg,
                 "price_per_kg": item.price_per_kg,
-                "line_total": line_total
+                "cost_price_per_kg": cost_price,
+                "line_total": line_total,
+                "profit": profit,
             })
 
         # Dynamic Tax & Shipping
         business = db.query(BusinessSettings).first()
-        tax_rate = Decimal(str(business.tax_rate)) / 100 if business else Decimal("0.18")
-        shipping_rate = Decimal(str(business.shipping_rate)) / 100 if business else Decimal("0.15")
-        
-        tax = subtotal * tax_rate
-        shipping = subtotal * shipping_rate
-        total = subtotal + tax + shipping
+        tax_rate = (Decimal(str(business.tax_rate)) / Decimal("100")) if business else Decimal("0")
+        shipping_rate = (Decimal(str(business.shipping_rate)) / Decimal("100")) if business else Decimal("0")
+
+        tax = money(subtotal * tax_rate)
+        shipping = money(subtotal * shipping_rate)
+        total = money(subtotal + tax + shipping)
 
         new_order = Orders(
             order_number=order_num,
@@ -251,7 +291,7 @@ def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db)):
         raise
 
 @router.patch('/{order_id}', response_model=dict)
-def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depends(get_db)):
+def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Updating order {order_id}")
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
@@ -330,32 +370,38 @@ def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depen
         db.query(OrderItems).filter(OrderItems.order_id == order.id).delete()
 
         subtotal = Decimal("0.00")
+
+        products_by_id = _load_products_for_items(db, payload.items)
+        _validate_cost_prices(payload.items, products_by_id)
+
         for item in payload.items:
-            product = db.query(Products).filter(Products.id == item.product_id).first()
-            if not product:
-                raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
-            
-            line_total = item.quantity_kg * item.price_per_kg
-            subtotal += line_total
+            product = products_by_id[str(item.product_id)]
+            cost_price = Decimal(str(product.cost_price_per_kg))
+
+            line_total = money(item.quantity_kg * item.price_per_kg)
+            profit = money((item.price_per_kg - cost_price) * item.quantity_kg)
+            subtotal = money(subtotal + line_total)
             
             order_item = OrderItems(
                 order_id=order.id,
                 product_id=item.product_id,
                 quantity_kg=item.quantity_kg,
                 price_per_kg=item.price_per_kg,
-                line_total=line_total
+                cost_price_per_kg=cost_price,
+                line_total=line_total,
+                profit=profit,
             )
             db.add(order_item)
 
         # Dynamic Tax & Shipping
         business = db.query(BusinessSettings).first()
-        tax_rate = Decimal(str(business.tax_rate)) / 100 if business else Decimal("0.18")
-        shipping_rate = Decimal(str(business.shipping_rate)) / 100 if business else Decimal("0.15")
-        
-        tax = subtotal * tax_rate
-        shipping = subtotal * shipping_rate
+        tax_rate = (Decimal(str(business.tax_rate)) / Decimal("100")) if business else Decimal("0")
+        shipping_rate = (Decimal(str(business.shipping_rate)) / Decimal("100")) if business else Decimal("0")
+
+        tax = money(subtotal * tax_rate)
+        shipping = money(subtotal * shipping_rate)
         order.subtotal = subtotal
-        order.total = subtotal + tax + shipping
+        order.total = money(subtotal + tax + shipping)
 
         db.commit()
         logger.info(f"Order {order.order_number} updated successfully")
@@ -367,7 +413,7 @@ def update_order(order_id: str, payload: CreateOrderRequest, db: Session = Depen
         raise
 
 @router.delete('/{order_id}', status_code=status.HTTP_204_NO_CONTENT)
-def delete_order(order_id: str, db: Session = Depends(get_db)):
+def delete_order(order_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"Deleting order {order_id}")
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
@@ -384,7 +430,7 @@ def delete_order(order_id: str, db: Session = Depends(get_db)):
         raise
 
 @router.patch("/{order_id}/status/", response_model=dict)
-def update_order_status(order_id: str, payload: dict, db: Session = Depends(get_db)):
+def update_order_status(order_id: str, payload: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -425,7 +471,7 @@ def update_order_status(order_id: str, payload: dict, db: Session = Depends(get_
     return {"message": "Status updated successfully", "status": order.order_status}
 
 @router.patch("/{order_id}/payment-status/", response_model=dict)
-def update_payment_status(order_id: str, payload: dict, db: Session = Depends(get_db)):
+def update_payment_status(order_id: str, payload: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     order = db.query(Orders).filter(Orders.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -459,7 +505,7 @@ def update_payment_status(order_id: str, payload: dict, db: Session = Depends(ge
     return {"message": "Payment status updated successfully", "status": order.payment_status}
 
 @router.get('/{order_id}/invoice.pdf')
-def download_invoice(order_id: str, db: Session = Depends(get_db)):
+def download_invoice(order_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info(f"PDF download requested for order {order_id}")
 
     order = db.query(Orders).filter(Orders.id == order_id).first()

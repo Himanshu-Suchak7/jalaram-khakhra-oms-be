@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 
-from routers import auth, users, customers, business, products, orders, inventory, dashboard
+from routers import auth, users, customers, business, products, orders, inventory, dashboard, profit
 from settings import settings
 
 app = FastAPI()
@@ -15,6 +15,7 @@ app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(inventory.router)
 app.include_router(dashboard.router)
+app.include_router(profit.router)
 
 
 @app.get("/")

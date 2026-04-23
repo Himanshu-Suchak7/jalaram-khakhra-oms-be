@@ -6,14 +6,18 @@ from datetime import datetime, timedelta, timezone
 from core.logger import get_logger
 from database.database import get_db
 from database.database_models import Orders, OrderStatus
-from schemas.pydantic_models import DashboardOverviewResponse
+from dependencies.auth import get_current_user
+from dependencies.roles import admin_required
+from schemas.pydantic_models import DashboardOverviewResponse, ProfitSummaryResponse
+from utils.timezone import IST, now_ist
+from routers import profit as profit_router
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 @router.get("/overview", response_model=DashboardOverviewResponse)
-def get_dashboard_overview(db: Session = Depends(get_db)):
+def get_dashboard_overview(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     logger.info("Fetching dashboard overview")
 
     try:
@@ -42,12 +46,15 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
 
         # 3. Revenue Overview (Last 30 Days - 4 Weeks)
         # For simplicity, we'll calculate 4 week-long buckets
-        today = datetime.now(timezone.utc)
+        # Reporting boundaries are based on IST business time; DB comparisons use UTC.
+        today_ist = now_ist()
         revenue_series = []
         
         for i in range(4, 0, -1):
-            start_date = today - timedelta(days=i*7)
-            end_date = today - timedelta(days=(i-1)*7)
+            start_date_ist = today_ist - timedelta(days=i * 7)
+            end_date_ist = today_ist - timedelta(days=(i - 1) * 7)
+            start_date = start_date_ist.astimezone(timezone.utc)
+            end_date = end_date_ist.astimezone(timezone.utc)
             
             week_revenue = (
                 db.query(func.sum(Orders.total))
@@ -75,7 +82,7 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
                 "id": r.id,
                 "order_id": r.order_number,
                 "customer_name": r.customer_name,
-                "date": r.created_at.strftime("%Y-%m-%d"),
+                "date": r.created_at.astimezone(IST).strftime("%Y-%m-%d"),
                 "status": r.order_status.name,
                 "total": float(r.total)
             }
@@ -107,3 +114,9 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error("Error fetching dashboard overview", exc_info=True)
         raise
+
+
+@router.get("/profit-summary", response_model=ProfitSummaryResponse)
+def get_dashboard_profit_summary(db: Session = Depends(get_db), current_user=Depends(admin_required)):
+    # Delegate to the canonical profit summary implementation.
+    return profit_router.get_profit_summary(db=db, current_user=current_user)
