@@ -22,7 +22,7 @@ def get_customers(
 ):
     logger.info(f"Fetching Customers list | requested_by={current_user['sub']}")
 
-    customers = db.query(Customers).all()
+    customers = db.query(Customers).filter(Customers.is_active == True).all()
 
     response = [
         {

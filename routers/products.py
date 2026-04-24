@@ -93,7 +93,7 @@ def get_products(db: Session = Depends(get_db), current_user=Depends(get_current
     logger.info(f"Fetching products list | requested_by={current_user['sub']}")
 
     is_admin = current_user.get("role") == "admin"
-    products = db.query(Products).all()
+    products = db.query(Products).filter(Products.is_active == True).all()
 
     response = [
         {

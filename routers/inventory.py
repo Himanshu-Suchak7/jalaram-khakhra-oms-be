@@ -197,33 +197,15 @@ def add_stock(
     db: Session = Depends(get_db),
     current_user=Depends(admin_required),
 ):
-    logger.info("Add stock initiated")
+    logger.info(f"Inventory transaction initiated | by_admin={current_user.get('sub')}")
 
     try:
         product_id = payload.product_id
-        quantity = payload.quantity_kg
+        requested_qty = payload.quantity_kg
+        requested_action = payload.action
 
-        # 🔹 Validation
-        if not product_id:
-            logger.warning("Product ID missing in add stock request")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Product ID is required"
-            )
-
-        if quantity is None:
-            logger.warning(f"Quantity missing | product_id={product_id}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Quantity is required"
-            )
-
-        if float(quantity) <= 0:
-            logger.warning(f"Invalid quantity | product_id={product_id} | value={quantity}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Quantity must be greater than 0"
-            )
+        if requested_qty is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quantity is required")
 
         # 🔹 Check product exists
         product = db.query(Products).filter(Products.id == product_id).first()
@@ -235,24 +217,85 @@ def add_stock(
                 detail="Product not found"
             )
 
-        # 🔹 Create transaction
+        # --- Current on-hand stock (ledger): ADD - DEDUCT ---
+        onhand = (
+            db.query(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (InventoryTransactions.action == InventoryActions.ADD, InventoryTransactions.quantity_kg),
+                            (InventoryTransactions.action == InventoryActions.DEDUCT, -InventoryTransactions.quantity_kg),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                )
+            )
+            .filter(InventoryTransactions.product_id == product_id)
+            .scalar()
+        ) or 0
+
+        # --- Reserved stock (PENDING orders) ---
+        reserved = (
+            db.query(func.coalesce(func.sum(OrderItems.quantity_kg), 0))
+            .join(Orders, Orders.id == OrderItems.order_id)
+            .filter(OrderItems.product_id == product_id)
+            .filter(Orders.order_status == OrderStatus.PENDING)
+            .scalar()
+        ) or 0
+
+        # Normalize action semantics:
+        # - add: increase on-hand by requested_qty
+        # - deduct: decrease on-hand by requested_qty (must not break pending reservations)
+        # - adjust: set on-hand to requested_qty by translating into add/deduct delta
+        if requested_action == "adjust":
+            delta = requested_qty - onhand
+            if delta == 0:
+                return {
+                    "message": "Stock already matches requested level",
+                    "transaction_id": "00000000-0000-0000-0000-000000000000",
+                    "product_id": str(product_id),
+                    "quantity_kg": 0.0,
+                }
+            action = InventoryActions.ADD if delta > 0 else InventoryActions.DEDUCT
+            quantity = abs(delta)
+            notes = payload.notes or f"Adjusted stock to {float(requested_qty)} kg"
+        else:
+            action = InventoryActions(requested_action)
+            quantity = requested_qty
+            notes = payload.notes or ("Manual stock added" if action == InventoryActions.ADD else "Manual stock deducted")
+
+        if quantity <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quantity must be greater than 0")
+
+        if action == InventoryActions.DEDUCT:
+            # Protect against negative on-hand or breaking pending reservations (available < 0).
+            if onhand - quantity < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot deduct more than current stock",
+                )
+            if (onhand - quantity) - reserved < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot deduct stock below reserved quantity for pending orders",
+                )
+
         transaction = InventoryTransactions(
             product_id=product_id,
-            action=InventoryActions.ADD,
+            action=action,
             quantity_kg=quantity,
-            notes="Manual stock added"
+            notes=notes,
         )
 
         db.add(transaction)
         db.commit()
         db.refresh(transaction)
 
-        logger.info(
-            f"Stock added successfully | product_id={product_id} | quantity={quantity}"
-        )
+        logger.info(f"Inventory updated | product_id={product_id} | action={action.value} | quantity={quantity}")
 
         return {
-            "message": "Stock added successfully",
+            "message": "Inventory updated successfully",
             "transaction_id": str(transaction.id),
             "product_id": str(product_id),
             "quantity_kg": float(quantity)
@@ -263,10 +306,10 @@ def add_stock(
 
     except Exception:
         logger.error(
-            f"Error adding stock | product_id={payload.get('product_id')}",
+            f"Error updating inventory | product_id={getattr(payload, 'product_id', None)}",
             exc_info=True
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to add stock"
+            detail="Failed to update inventory"
         )
